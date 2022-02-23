@@ -10,6 +10,8 @@ import getopt
 import enum
 from typing import Any
 import logging
+from typing import List, Tuple, Dict
+
 from common.byteutil import ByteUtil
 from common.result import ResultCode, Result
 
@@ -51,13 +53,13 @@ class OracleField:
     #这是定义长度，实际数据不一定会有这么长
     defineLen:int=0
     charset:str=None
-    data:str=None
+   
     
     def readMetaInfo(self,f:io.BufferedReader)->bool:
         return False
     
-    def readData(self,f:io.BufferedReader)->bool:
-        return False
+    def readData(self,f:io.BufferedReader)->str:
+        return None
 
 class OracleVarchar2Field(OracleField):
     def readMetaInfo(self, f: io.BufferedReader)->bool:
@@ -69,20 +71,20 @@ class OracleVarchar2Field(OracleField):
         f.read(2)
         return True
     
-    def readData(self, f: io.BufferedReader):
-        bsize= ByteUtil.littleOrderBytes2Int(f.read(2))
+    def readData(self, f: io.BufferedReader)->str: 
+        bsize= f.read(2)
         #null
         if(bsize==b'\xfe\xff'):
-            self.data='null'
-            return True
+            return 'null'
+             
         
         size= ByteUtil.littleOrderBytes2Int(bsize)
         if size>self.defineLen:
             print("读取数据错误,实际长度大于定义长度, file offset=",hex(f.tell()))
-            return False   
+            return None   
                 
-        self.data= "'"+f.read(size).decode(self.charset, 'ignore')+"'"
-        return True
+        return  "'"+f.read(size).decode(self.charset, 'ignore')+"'"
+         
         
 class OracleCharField(OracleField):
     def readMetaInfo(self, f: io.BufferedReader)->bool:
@@ -94,20 +96,20 @@ class OracleCharField(OracleField):
         f.read(2)
         return True
     
-    def readData(self, f: io.BufferedReader)->bool:
-        bsize= ByteUtil.littleOrderBytes2Int(f.read(2))
+    def readData(self, f: io.BufferedReader)->str:
+        bsize= f.read(2)
         #null
         if(bsize==b'\xfe\xff'):
-            self.data='null'
-            return
+            return 'null'
+             
         
         size= ByteUtil.littleOrderBytes2Int(bsize)
         
         if size>self.defineLen:
             print("读取数据错误,实际长度大于定义长度, file offset=",hex(f.tell()))
-            return False    
+            return None    
         
-        self.data= "'"+f.read(size).decode(self.charset, 'ignore')+"'"
+        return  "'"+f.read(size).decode(self.charset, 'ignore')+"'"
 
 class OracleNumberField(OracleField):
     def readMetaInfo(self, f: io.BufferedReader)->bool:
@@ -115,27 +117,27 @@ class OracleNumberField(OracleField):
         self.defineLen= ByteUtil.littleOrderBytes2UnsignedInt(f.read(2))
         return True
 
-    def readData(self, f: io.BufferedReader)->bool:
-        bsize= ByteUtil.littleOrderBytes2Int(f.read(2))
+    def readData(self, f: io.BufferedReader)->str:
+        bsize= f.read(2)
         #data is null
         if(bsize==b'\xfe\xff'):
-            self.data='null'
-            return True
+            return 'null'
+             
         
         size= ByteUtil.littleOrderBytes2Int(bsize)
         
         #data is 0
         if size==1 :
             if f.read(1)==b'\x80':
-                self.data='0' 
-                return True
+                return '0' 
+                
             else:
                 print("data read error,file offset=",hex(f.tell()))
-                return False
+                return None
         
         if size>self.defineLen:
             print("读取数据错误,实际长度大于定义长度, file offset=",hex(f.tell()))
-            return False            
+            return None            
        
         high=f.read(1)[0]
          #data > 0   
@@ -145,7 +147,7 @@ class OracleNumberField(OracleField):
             for d in bdata:
                 idata+=d*(100**(high-0xc1))
             
-            self.data= str(idata)
+            return str(idata)
         else:
             #data < 0   
             bdata=f.read(size-2)
@@ -155,8 +157,8 @@ class OracleNumberField(OracleField):
             for d in bdata:
                 idata+=d*(100**(0x3e-high))
             
-            self.data= str(-idata)            
-        return True
+            return str(-idata)            
+         
 
 class OracleDateField(OracleField):
     def readMetaInfo(self, f: io.BufferedReader)->bool:
@@ -164,35 +166,38 @@ class OracleDateField(OracleField):
         self.defineLen= ByteUtil.littleOrderBytes2UnsignedInt(f.read(2))
         return True
 
-    def readData(self, f: io.BufferedReader)->bool:
-        bsize= ByteUtil.littleOrderBytes2Int(f.read(2))
+    def readData(self, f: io.BufferedReader)->str:
+        bsize= f.read(2)
         #data is null
         if(bsize==b'\xfe\xff'):
-            self.data='null'
-            return True
+            return 'null'
+            
         
         size= ByteUtil.littleOrderBytes2Int(bsize)
 
         # format error
         if size!=7:
             print("date 长度不正确,预期7,实际:",size,",file offset:",hex(f.tell()))
+            return None
 
+        data="to_date('"
         # century
-        self.data=str((f.read(1)[0]-100))
+        data+=str((f.read(1)[0]-100))
         # year
-        self.data+="{:0>2d}".format(f.read(1)[0])    
+        data+="{:0>2d}".format(f.read(1)[0]-100)    
         # month
-        self.data+="-{:0>2d}".format(f.read(1)[0])  
+        data+="-{:0>2d}".format(f.read(1)[0])  
         # day
-        self.data+="-{:0>2d}".format(f.read(1)[0])  
+        data+="-{:0>2d}".format(f.read(1)[0])  
         #hour
-        self.data+=" {:0>2d}:".format(f.read(1)[0]-1)  
+        data+=" {:0>2d}:".format(f.read(1)[0]-1)  
         #minute
-        self.data+="{:0>2d}:".format(f.read(1)[0]-1)  
+        data+="{:0>2d}:".format(f.read(1)[0]-1)  
         #second
-        self.data+="{:0>2d}".format(f.read(1)[0]-1)  
+        data+="{:0>2d}".format(f.read(1)[0]-1)  
         
-        return True
+        data+="', 'yyyy-MM-dd HH24:MI:ss')"
+        return data
                         
     
 
@@ -202,47 +207,52 @@ class OracleTimestampField(OracleField):
         self.defineLen= ByteUtil.littleOrderBytes2UnsignedInt(f.read(2))
         return True
 
-    def readData(self, f: io.BufferedReader)->bool:
-        bsize= ByteUtil.littleOrderBytes2Int(f.read(2))
+    def readData(self, f: io.BufferedReader)->str:
+        bsize= f.read(2)
         #data is null
         if(bsize==b'\xfe\xff'):
-            self.data='null'
-            return True
+            return 'null'
+          
         
         size= ByteUtil.littleOrderBytes2Int(bsize)
 
         # format error
         if size!=7 and size!=11:
             print("date 长度不正确,预期7,实际:",size,",file offset:",hex(f.tell()))
+            return None
 
+        data="to_timestamp('"
         # century
-        self.data=str((f.read(1)[0]-100))
+
+        data+=str((f.read(1)[0]-100))
         # year
-        self.data+="{:0>2d}".format(f.read(1)[0])    
+        data+="{:0>2d}".format(f.read(1)[0]-100)    
         # month
-        self.data+="-{:0>2d}".format(f.read(1)[0])  
+        data+="-{:0>2d}".format(f.read(1)[0])  
         # day
-        self.data+="-{:0>2d}".format(f.read(1)[0])  
+        data+="-{:0>2d}".format(f.read(1)[0])  
         #hour
-        self.data+=" {:0>2d}:".format(f.read(1)[0]-1)  
+        data+=" {:0>2d}:".format(f.read(1)[0]-1)  
         #minute
-        self.data+="{:0>2d}:".format(f.read(1)[0]-1)  
+        data+="{:0>2d}:".format(f.read(1)[0]-1)  
         #second
-        self.data+="{:0>2d}".format(f.read(1)[0]-1)  
+        data+="{:0>2d}".format(f.read(1)[0]-1)  
         
         if size==7:
-            return True
+            data+="', 'yyyy-MM-dd HH24:MI:ss')"
+            return data
+        data+="."
+        data+=str(ByteUtil.bigOrderBytes2UnsignedInt(f.read(4)))[0:3]   
+        data+="', 'yyyy-MM-dd HH24:MI:ss.ff')"
         
-        self.data+=str(ByteUtil.bigOrderBytes2UnsignedInt(f.read(4)))  
-        
-        return True
+        return data
  
 
  
 
 
         
-fieldTypes={
+FIELD_TYPES={
     b'\x01\x00':OracleVarchar2Field,
     b'\x02\x00':OracleNumberField,
     b'\x0c\x00':OracleDateField,
@@ -253,14 +263,30 @@ fieldTypes={
 
 def readFieldInfo(f: io.BufferedReader)->OracleField:
     fieldTypeBytes=f.read(2);
-    field=fieldTypes.get(fieldTypeBytes,OracleField)()
+    field=FIELD_TYPES.get(fieldTypeBytes,OracleField)()
     success=field.readMetaInfo(f);
     if success:
         return field
     else:
         return None
        
-
+def readFieldsData(f:io.BufferedReader,fieldtypes:List[OracleField])->bool:
+    
+    while True:
+        blen=f.read(2)
+        #判断是否结束
+        if blen==b'\x00\x00':
+            blen=f.read(2)
+            if blen==b'\xff\xff':
+                return True
+            else:
+                return False;
+        else:
+            f.seek(f.tell()-2)        
+            
+        for ft in fieldtypes:
+            print(ft.readData(f))
+        
 
 
 
@@ -275,7 +301,7 @@ def main():
         fileName=args[0]
     else:
         fileName= "20220216-1105.dmp"
-    print("filename="+fileName,end="");
+    print("filename="+fileName);
     with open(fileName, "rb") as f:
         fileidx = 0
         try:
@@ -339,14 +365,15 @@ def main():
                 if(theFieldInfo==None):
                     print("field ",i," unknown,exit.")
                     return;
-                #print("field ",i,"type:", theFieldInfo.type,",len:",theFieldInfo.defineLen,",charset:",theFieldInfo.charset)
+                print("field ",i,"type:", theFieldInfo.type,",len:",theFieldInfo.defineLen,",charset:",theFieldInfo.charset)
                 tableFields.append(theFieldInfo);
             #四字节0的分隔符
             spearate=  f.read(4)
-            if spearate!=b'\0x0\0x0\0x0\0x0':
+            if spearate!=b'\x00\x00\x00\x00':
                 print("预期的字段定义与数据值中间的分隔符未出现，程序退出。file offset=",hex(f.tell()))
                 return;
             
+            readFieldsData(f,tableFields)
         except Exception as e:
             print("catch Exception: prefileIdx=",fileidx,",file offset=",hex(f.tell()))        
             raise e
