@@ -1,9 +1,12 @@
+
+from asyncio.log import logger
+from fileinput import filename
 import io
 import os
 import sys
 
-parent_dir=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(parent_dir)
+# parent_dir=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# sys.path.append(parent_dir)
 
 
 import getopt
@@ -13,7 +16,8 @@ import logging
 from typing import List, Tuple, Dict
 
 from common.byteutil import ByteUtil
-from common.result import ResultCode, Result
+from common.properties import Properties
+from common.result import  Result
 
 
 logging.basicConfig(level=logging.DEBUG #设置日志输出格式
@@ -45,6 +49,9 @@ oracleCharsetCodeMapDict={
 
 
 
+class InsertSqlSegment:
+    sql:str
+    startidx:int
 
 
 
@@ -144,8 +151,10 @@ class OracleNumberField(OracleField):
         if high> 0x80:
             bdata=f.read(size-1)
             idata=0
+            power=high-0xc1
             for d in bdata:
-                idata+=d*(100**(high-0xc1))
+                idata+=(d-1)*(100**power)
+                power=power-1
             
             return str(idata)
         else:
@@ -154,10 +163,11 @@ class OracleNumberField(OracleField):
             signed=f.read(1)
             
             idata=0
+            power=0x3e-high
             for d in bdata:
-                idata+=d*(100**(0x3e-high))
-            
-            return str(-idata)            
+                idata+=(d-0x65)*(100**(power))
+                power=power-1
+            return str(idata)            
          
 
 class OracleDateField(OracleField):
@@ -261,6 +271,32 @@ FIELD_TYPES={
     
 }
 
+
+def getInsertSql(f:io.BufferedReader,charsetName:str)->Result:
+    startidx=f.tell()
+    exitNum=0
+    ret=ByteUtil.readBytes(f, b'\x0a',2048)
+    while ret.isSuccess():
+        insertSql=bytes(ret.data).decode(charsetName, 'ignore');
+        #print(insertSql)
+        if insertSql.strip().startswith("INSERT INTO"):
+            break
+        startidx=f.tell()
+        ret=ByteUtil.readBytes(f, b'\x0a')
+    
+    if ret.isError():
+        print("获取 insert sql 语句时发生错误(可能已经没有更多的insert sql了)：",ret.msg,",file start index=",hex(startidx))
+        return Result.errorResult(data=ret.data ,msg=ret.msg)
+    if exitNum==2:
+        return Result.errorResult(msg="读取到EXIT指定，文件已结束。")
+    
+    sqlseg= InsertSqlSegment()
+    sqlseg.sql=insertSql
+    sqlseg.startidx=startidx
+    return Result.successResult(data=sqlseg);
+        
+        
+
 def readFieldInfo(f: io.BufferedReader)->OracleField:
     fieldTypeBytes=f.read(2);
     field=FIELD_TYPES.get(fieldTypeBytes,OracleField)()
@@ -269,10 +305,66 @@ def readFieldInfo(f: io.BufferedReader)->OracleField:
         return field
     else:
         return None
+    
+    
+def readFieldTypes(f:io.BufferedReader,printDetail:bool=False)->Result:
+    colCount= ByteUtil.littleOrderBytes2UnsignedInt(f.read(2))
+    if printDetail==True:
+        print("字段总数：",colCount)
+    tableFields=[]
+    for i in range(colCount):
+        theFieldInfo=readFieldInfo(f)
+        if(theFieldInfo==None):
+            return Result.errorResult(msg="field "+str(i)+" type unknown,exit. file offset="+hex(f.tell()))
+
+        if printDetail==True:        
+            print("field ",i,"type:", theFieldInfo.type,",len:",theFieldInfo.defineLen,",charset:",theFieldInfo.charset)
+        tableFields.append(theFieldInfo);
+
+    #字段定义与记录之间的四字节0的分隔符
+    spearate=  f.read(4)
+    if spearate!=b'\x00\x00\x00\x00':
+        print("预期的字段定义与数据值中间的分隔符未出现，程序退出。file offset=",hex(f.tell()))
+        return Result.errorResult(msg="预期的字段定义与数据值中间的分隔符未出现，程序退出。file offset="+hex(f.tell()))
+    
+    return Result.successResult(data=tableFields)    
+
        
-def readFieldsData(f:io.BufferedReader,fieldtypes:List[OracleField])->bool:
+def readFieldsData(f:io.BufferedReader,fieldtypes:List[OracleField],sql:str,printDetail:bool=False,outfile:io.TextIOWrapper=None)->bool:
+    recCount=1;
+    
+    #没有记录的情况
+    blen=f.read(2)
+    if blen==b'\xff\xff':
+        print("0条记录")
+        return True
+    else:
+        f.seek(f.tell()-2)
+    
     
     while True:
+        # print("\b"*100,end="")
+        #print("\r读取第",recCount,"条记录:",end="") 
+        if printDetail==True:
+            print("读取第",recCount,"条记录:",hex(f.tell()))
+        else:
+            print("\r读取第",recCount,"条记录:",hex(f.tell()),end="")
+            logging.info("读取第"+str(recCount)+"条记录:offset="+hex(f.tell()))
+        currSql=sql        
+        fieldIdx=1;    
+        for ft in fieldtypes:
+            fieldValue=ft.readData(f)
+            currSql=currSql.replace(":"+str(fieldIdx),fieldValue,1)
+            fieldIdx+=1
+            #print(ft.readData(f),"\t")
+        
+        if printDetail==True:
+            print("")
+            print(currSql)
+        if outfile!=None:
+            outfile.write(currSql)
+        
+        
         blen=f.read(2)
         #判断是否结束
         if blen==b'\x00\x00':
@@ -280,12 +372,14 @@ def readFieldsData(f:io.BufferedReader,fieldtypes:List[OracleField])->bool:
             if blen==b'\xff\xff':
                 return True
             else:
-                return False;
+                f.seek(f.tell()-2)
         else:
-            f.seek(f.tell()-2)        
-            
-        for ft in fieldtypes:
-            print(ft.readData(f))
+            print("")
+            print("没有记录中止标记，file offset=",hex(f.tell()))  
+            return False
+        
+        recCount+=1
+                          
         
 
 
@@ -295,19 +389,67 @@ def readFieldsData(f:io.BufferedReader,fieldtypes:List[OracleField])->bool:
 
 def main():
 
+    
+    
+    
     logging.info("开始分析文件")
-    options, args = getopt.getopt(sys.argv[1:], "o", longopts=[])
-    if len(args)>0:
-        fileName=args[0]
-    else:
-        fileName= "20220216-1105.dmp"
-    print("filename="+fileName);
+    
+   
+    print("从",os.path.abspath("app.properties"),"中读取配置...")  
+    pros= Properties(os.path.abspath("app.properties"))
+    fileName:str=pros.get("dump-file",None)
+    if(fileName==None):
+        print("dump-file not set")
+        print("请先在",os.getcwd(),"目录中设置好app.properties，若没有，需要新增一个")
+        return 
+    print("dump-file=",filename)
+    rowIndex:int=int(pros.get("row-start-index",0),16)
+    print("rowIndex=",rowIndex)
+    
+    insertSqlIndex:int = int(pros.get("insert-sql-index",0),16)
+    print("insertSqlIndex=",insertSqlIndex)
+    
+    printDetail:bool=pros.get("debug",False)
+    print("debug=",printDetail)
+    
+    
+    
+    outfileName=pros.get("out-file",None)
+    print("out-file=",outfileName)
+    outfile=None
+    if outfileName!=None:
+        outfile:io.TextIOWrapper=open(outfileName,'w')
+    
+    
+    
+    # options, args = getopt.getopt(sys.argv[1:], "-d-o:-i:-r:", longopts=['debug','outfile=','insertsqlidx=','rowidx=',])
+    # if len(args)>0:
+    #     fileName=args[0]
+    # else:
+        #fileName= "20220216-1105.dmp"
+        # fileName= "house.dmp"
+
+    # for opt_name,opt_value in options:
+    #     if opt_name in ('-d','--debug'):
+    #         printDetail =True
+    #         continue
+    #     if opt_name in ('-r','--rowidx'):
+    #         rowIndex=int(opt_value,16)
+    #         continue
+    #     if opt_name in ('-i','--insertsqlidx'):
+    #         insertSqlIndex=int(opt_value,16)
+    #         continue
+             
+    #     if opt_name in ('-o','--outfile'):
+    #         print("outfilename=",opt_value)
+    #         outfile = open(opt_value,'w')
+
+        
     with open(fileName, "rb") as f:
         fileidx = 0
         try:
             
             a = f.read(1);
-            
 
             if (a[0] != 0x03):
                 print("第一个字节不是预期值，文件可能不是dump文件。：", a)
@@ -320,7 +462,7 @@ def main():
             ret: Result = None
             for num in range(4):
                 ret = ByteUtil.readBytes(f, b'\x0a')
-                if (ret.code == ResultCode.ERROR):
+                if (ret.isError()):
                     print(ret.msg)
                     return
                 print((bytes(ret.data[0:-1]).decode(currentCharsetName, 'ignore')))
@@ -340,41 +482,45 @@ def main():
             while(nextLen>0):
                 f.read(nextLen);
                 nextLen=  ByteUtil.littleOrderBytes2UnsignedInt(f.read(2));
+            
+            if insertSqlIndex>0  :
+                f.seek(insertSqlIndex)
+                print("insertSqlIndex=",hex(insertSqlIndex))
 
             # 接下来是一段找不到长度定义的字节了,直接强行读到insert算了
+            ret=getInsertSql(f,currentCharsetName)
             
-            ret=ByteUtil.readBytes(f, b'\x0a')
-            while ret.code==ResultCode.OK:
-                insertSql=bytes(ret.data).decode(currentCharsetName, 'ignore');
-                #print(insertSql)
-                if insertSql.strip().startswith("INSERT INTO"):
+            while ret.isSuccess():
+                sdata=ret.data
+                print("--------------------------------")
+                print("insert sql start index:",hex(sdata.startidx))
+                print(sdata.sql)
+                
+                logging.info("-----------------------------------")
+                logging.info("insert sql start offset:"+hex(sdata.startidx))
+                logging.info(sdata.sql)
+ 
+                
+                ft_ret=readFieldTypes(f)
+                if(ft_ret.isError()):
+                    print(ft_ret.msg)
+                    return
+                tableFields=ft_ret.data
+                if rowIndex>0:
+                    f.seek(rowIndex)
+                    print("insertSqlIndex=",hex(rowIndex))
+                readFieldsData(f,tableFields,sql=sdata.sql, printDetail=printDetail,outfile=outfile)
+                print("");
+                insertSqlIndex=0
+                ret=getInsertSql(f,currentCharsetName)
+            
 
-                    break
-                ret=ByteUtil.readBytes(f, b'\x0a')
-            
-            if ret.code!=ResultCode.OK:
-                print("没找到INSERT 语句，退出") 
-            
-            print("找到插入语句，准备获取插入数据：",insertSql)
-            
-            colCount= ByteUtil.littleOrderBytes2UnsignedInt(f.read(2))
-            print("字段总数：",colCount)
-            tableFields=[]
-            for i in range(colCount):
-                theFieldInfo=readFieldInfo(f)
-                if(theFieldInfo==None):
-                    print("field ",i," unknown,exit.")
-                    return;
-                print("field ",i,"type:", theFieldInfo.type,",len:",theFieldInfo.defineLen,",charset:",theFieldInfo.charset)
-                tableFields.append(theFieldInfo);
-            #四字节0的分隔符
-            spearate=  f.read(4)
-            if spearate!=b'\x00\x00\x00\x00':
-                print("预期的字段定义与数据值中间的分隔符未出现，程序退出。file offset=",hex(f.tell()))
-                return;
-            
-            readFieldsData(f,tableFields)
+            if outfile!=None:
+                outfile.close()
+                
         except Exception as e:
+            if outfile!=None:
+                outfile.close()
             print("catch Exception: prefileIdx=",fileidx,",file offset=",hex(f.tell()))        
             raise e
         

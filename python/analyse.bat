@@ -1,1 +1,0 @@
-python dump_analyse.py 20220216-2129.dmp
