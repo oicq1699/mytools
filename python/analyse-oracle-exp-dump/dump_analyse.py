@@ -363,6 +363,7 @@ def readFieldsData(f:io.BufferedReader,fieldtypes:List[OracleField],sql:str,prin
             print(currSql)
         if outfile!=None:
             outfile.write(currSql)
+            
         
         
         blen=f.read(2)
