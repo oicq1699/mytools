@@ -331,15 +331,18 @@ def readFieldTypes(f:io.BufferedReader,printDetail:bool=False)->Result:
 
        
 def readFieldsData(f:io.BufferedReader,fieldtypes:List[OracleField],sql:str,printDetail:bool=False,outfile:io.TextIOWrapper=None)->bool:
+    global fileStartIdx
     recCount=1;
     
     #没有记录的情况
     blen=f.read(2)
+    fileStartIdx = f.tell();
     if blen==b'\xff\xff':
         print("0条记录")
         return True
     else:
         f.seek(f.tell()-2)
+        fileStartIdx = f.tell();
     
     
     while True:
@@ -348,32 +351,43 @@ def readFieldsData(f:io.BufferedReader,fieldtypes:List[OracleField],sql:str,prin
         if printDetail==True:
             print("读取第",recCount,"条记录:",hex(f.tell()))
         else:
-            print("\r读取第",recCount,"条记录:",hex(f.tell()),end="")
-            logging.info("读取第"+str(recCount)+"条记录:offset="+hex(f.tell()))
+            print("\b"*100,end="")
+            print("\r读取第",recCount,"条记录(",hex(f.tell()),"):",end="")
+
         currSql=sql        
         fieldIdx=1;    
         for ft in fieldtypes:
+            fileStartIdx = f.tell();
+            if(printDetail==False):
+                print(" >",fieldIdx,end="")
+                            
             fieldValue=ft.readData(f)
             currSql=currSql.replace(":"+str(fieldIdx),fieldValue,1)
+           
             fieldIdx+=1
             #print(ft.readData(f),"\t")
         
         if printDetail==True:
             print("")
             print(currSql)
+        else:
+            print(".",end="")
+ 
         if outfile!=None:
             outfile.write(currSql)
             
         
-        
+        fileStartIdx = f.tell();
         blen=f.read(2)
         #判断是否结束
         if blen==b'\x00\x00':
+            fileStartIdx = f.tell();
             blen=f.read(2)
             if blen==b'\xff\xff':
                 return True
             else:
                 f.seek(f.tell()-2)
+                fileStartIdx = f.tell();
         else:
             print("")
             print("没有记录中止标记，file offset=",hex(f.tell()))  
@@ -386,12 +400,13 @@ def readFieldsData(f:io.BufferedReader,fieldtypes:List[OracleField],sql:str,prin
 
 
 #--------------------------------
-
+global fileStartIdx
+fileStartIdx =0
 
 def main():
 
     
-    
+    global fileStartIdx
     
     logging.info("开始分析文件")
     
@@ -404,10 +419,10 @@ def main():
         print("请先在",os.getcwd(),"目录中设置好app.properties，若没有，需要新增一个")
         return 
     print("dump-file=",filename)
-    rowIndex:int=int(pros.get("row-start-index",0),16)
+    rowIndex:int=int(pros.get("row-start-index","0"),16)
     print("rowIndex=",rowIndex)
     
-    insertSqlIndex:int = int(pros.get("insert-sql-index",0),16)
+    insertSqlIndex:int = int(pros.get("insert-sql-index","0"),16)
     print("insertSqlIndex=",insertSqlIndex)
     
     printDetail:bool=pros.get("debug",False)
@@ -447,16 +462,18 @@ def main():
 
         
     with open(fileName, "rb") as f:
-        fileidx = 0
+        
         try:
             
             a = f.read(1);
 
             if (a[0] != 0x03):
                 print("第一个字节不是预期值，文件可能不是dump文件。：", a)
-            fileidx = f.tell();
+            fileStartIdx = f.tell();
 
             thecharsetCode=f.read(2)
+            fileStartIdx = f.tell();
+            
             currentCharsetName=oracleCharsetCodeMapDict.get(thecharsetCode[::-1]);
             print("dump 文件字符集:",currentCharsetName)
 
@@ -471,21 +488,24 @@ def main():
             
             print("获取到dump数据进入点位置:",entityOffset)
             f.seek(int(entityOffset));
-            
+            fileStartIdx = f.tell();
             #读第一段带长度字节 到 +00：00        
             nextLen=  ByteUtil.littleOrderBytes2UnsignedInt(f.read(2));
             while(nextLen>0):
                 f.read(nextLen);
+                fileStartIdx = f.tell();
                 nextLen=  ByteUtil.littleOrderBytes2UnsignedInt(f.read(2));
 
             #读第二段带长度字节到 DISABLE:ALL
             nextLen= ByteUtil.littleOrderBytes2UnsignedInt(f.read(2));
             while(nextLen>0):
                 f.read(nextLen);
+                fileStartIdx = f.tell();
                 nextLen=  ByteUtil.littleOrderBytes2UnsignedInt(f.read(2));
             
             if insertSqlIndex>0  :
                 f.seek(insertSqlIndex)
+                fileStartIdx = f.tell();
                 print("insertSqlIndex=",hex(insertSqlIndex))
 
             # 接下来是一段找不到长度定义的字节了,直接强行读到insert算了
@@ -503,6 +523,8 @@ def main():
  
                 
                 ft_ret=readFieldTypes(f)
+                fileStartIdx = f.tell();
+                
                 if(ft_ret.isError()):
                     print(ft_ret.msg)
                     return
@@ -522,7 +544,7 @@ def main():
         except Exception as e:
             if outfile!=None:
                 outfile.close()
-            print("catch Exception: prefileIdx=",fileidx,",file offset=",hex(f.tell()))        
+            print("catch Exception: fileStart offset=",fileStartIdx,",file offset=",hex(f.tell()))        
             raise e
         
             
