@@ -412,13 +412,18 @@ def main():
     
    
     print("从",os.path.abspath("app.properties"),"中读取配置...")  
+    if os.path.exists(os.path.abspath("app.properties"))==False:
+        print("请先设置[",os.path.abspath("app.properties"),"] 文件")
+        exit(1)
+        
     pros= Properties(os.path.abspath("app.properties"))
     fileName:str=pros.get("dump-file",None)
     if(fileName==None):
         print("dump-file not set")
-        print("请先在",os.getcwd(),"目录中设置好app.properties，若没有，需要新增一个")
         return 
-    print("dump-file=",filename)
+    
+    print("dump-file=",fileName)
+    
     rowIndex:int=int(pros.get("row-start-index","0"),16)
     print("rowIndex=",rowIndex)
     
@@ -459,7 +464,9 @@ def main():
     #     if opt_name in ('-o','--outfile'):
     #         print("outfilename=",opt_value)
     #         outfile = open(opt_value,'w')
-
+    if os.path.exists(fileName)==False:
+        print("dump 文件",fileName,"不存在")
+        exit(1)
         
     with open(fileName, "rb") as f:
         
