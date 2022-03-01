@@ -1,5 +1,5 @@
 
-from asyncio.log import logger
+
 from fileinput import filename
 import io
 import os
@@ -13,6 +13,7 @@ import getopt
 import enum
 from typing import Any
 import logging
+from logging.handlers import RotatingFileHandler
 from typing import List, Tuple, Dict
 
 from common.byteutil import ByteUtil
@@ -20,13 +21,39 @@ from common.properties import Properties
 from common.result import  Result
 
 
-logging.basicConfig(level=logging.DEBUG #设置日志输出格式
-                    ,filename="analyse-dump.log" #log日志输出的文件位置和文件名
-                    ,filemode="w" #文件的写入格式，w为重新写入文件，默认是追加
-                    ,format="%(asctime)s - %(name)s - %(levelname)-9s - %(filename)-8s : %(lineno)s line - %(message)s" #日志输出的格式
-                    # -8表示占位符，让输出左对齐，输出长度都为8位
-                    ,datefmt="%Y-%m-%d %H:%M:%S" #时间输出的格式
-                    )
+# Create a formatter.
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+rootLogger = logging.getLogger("")
+rootLogger.setLevel(logging.INFO)
+# Create the rotating file handler. Limit the size to 1000000Bytes ~ 1MB .
+rootLoggerHandler = RotatingFileHandler("dump-analyse.log", mode='a', maxBytes=10000000, encoding=None, delay=0)
+rootLoggerHandler.setLevel(logging.INFO)
+
+# Add handler and formatter.
+rootLoggerHandler.setFormatter(formatter)
+rootLogger.addHandler(rootLoggerHandler)
+
+
+insertLogger = logging.getLogger("InsertLogger")
+insertLogger.setLevel(logging.INFO)
+# Create the rotating file handler. Limit the size to 1000000Bytes ~ 1MB .
+insertLoggerHandler = RotatingFileHandler("dump-analyse-insertsql.log", mode='a', maxBytes=10000000, encoding=None, delay=0)
+insertLoggerHandler.setLevel(logging.INFO)
+
+# Add handler and formatter.
+insertLoggerHandler.setFormatter(formatter)
+insertLogger.addHandler(insertLoggerHandler)
+
+
+
+# logging.basicConfig(level=logging.DEBUG #设置日志输出格式
+#                     ,filename="dump-analyse.log" #log日志输出的文件位置和文件名
+#                     ,filemode="w" #文件的写入格式，w为重新写入文件，默认是追加
+#                     ,format="%(asctime)s - %(name)s - %(levelname)-9s - %(filename)-8s : %(lineno)s line - %(message)s" #日志输出的格式
+#                     # -8表示占位符，让输出左对齐，输出长度都为8位
+#                     ,datefmt="%Y-%m-%d %H:%M:%S" #时间输出的格式
+#                     )
 
 
 
@@ -351,16 +378,16 @@ def readFieldsData(f:io.BufferedReader,fieldtypes:List[OracleField],sql:str,prin
         if printDetail==True:
             print("读取第",recCount,"条记录:",hex(f.tell()))
         else:
-            print("\b"*100,end="")
+           # print("\b"*2000,end="")
             print("\r读取第",recCount,"条记录(",hex(f.tell()),"):",end="")
-
+            rootLogger.info("读取第"+str(recCount)+"条记录("+hex(f.tell())+"):")
         currSql=sql        
         fieldIdx=1;    
         for ft in fieldtypes:
             fileStartIdx = f.tell();
             if(printDetail==False):
-                print(" >",fieldIdx,end="")
-                            
+                #print(" >",fieldIdx,"(",hex(fileStartIdx),")",end="")
+                rootLogger.info(" >>>"+str(fieldIdx)+"("+hex(fileStartIdx)+")")                  
             fieldValue=ft.readData(f)
             currSql=currSql.replace(":"+str(fieldIdx),fieldValue,1)
            
@@ -370,8 +397,7 @@ def readFieldsData(f:io.BufferedReader,fieldtypes:List[OracleField],sql:str,prin
         if printDetail==True:
             print("")
             print(currSql)
-        else:
-            print(".",end="")
+
  
         if outfile!=None:
             outfile.write(currSql)
@@ -408,7 +434,7 @@ def main():
     
     global fileStartIdx
     
-    logging.info("开始分析文件")
+    rootLogger.info("开始分析文件")
     
    
     print("从",os.path.abspath("app.properties"),"中读取配置...")  
@@ -524,9 +550,8 @@ def main():
                 print("insert sql start index:",hex(sdata.startidx))
                 print(sdata.sql)
                 
-                logging.info("-----------------------------------")
-                logging.info("insert sql start offset:"+hex(sdata.startidx))
-                logging.info(sdata.sql)
+                rootLogger.info("-----------------------------------")
+                insertLogger.info("(offset="+hex(sdata.startidx)+") "+sdata.sql)
  
                 
                 ft_ret=readFieldTypes(f)
@@ -549,9 +574,10 @@ def main():
                 outfile.close()
                 
         except Exception as e:
+            print("catch Exception: fileStart offset=",hex(fileStartIdx),",file offset=",hex(f.tell()))   
+            rootLogger.error("catch Exception: fileStart offset="+hex(fileStartIdx),",file end offset=",hex(f.tell()))
             if outfile!=None:
                 outfile.close()
-            print("catch Exception: fileStart offset=",fileStartIdx,",file offset=",hex(f.tell()))        
             raise e
         
             
